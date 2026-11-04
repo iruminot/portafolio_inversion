@@ -1,0 +1,65 @@
+name: Informe diario
+
+on:
+  schedule:
+    # Lunes a viernes 21:30 UTC = 18:30 Chile (verano) / 17:30 (invierno), después del cierre de Nueva York.
+    # GitHub puede retrasar las ejecuciones programadas entre algunos minutos y ~1 hora.
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths: ["engine/**", "config/**", "site/css/**", "site/js/**", "site/index.html", ".github/workflows/**"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: informe
+  cancel-in-progress: false
+
+jobs:
+  generar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Generar informes
+        run: python engine/motor.py
+
+      - name: Guardar informe en el historial
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site/data
+          if git diff --cached --quiet; then
+            echo "Sin cambios en los datos."
+          else
+            git commit -m "Informe $(date -u +%F)"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  desplegar:
+    needs: generar
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

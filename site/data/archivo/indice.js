@@ -1,0 +1,1 @@
+window.__INDICE={"diarios": ["2026-11-03"], "semanales": ["2026-W45"]};

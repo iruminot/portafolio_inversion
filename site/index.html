@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Centro de Inversión</title>
+  <meta name="description" content="Informes de inteligencia diarios y semanales, órdenes de compra/venta y escenarios para un portafolio de riesgo medio en Racional.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a78d6'/%3E%3Cpath d='M7 21l6-6 4 4 8-9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/app.css">
+  <script>
+    try { var t = localStorage.getItem("inv.tema"); if (t) document.documentElement.setAttribute("data-theme", JSON.parse(t)); } catch (e) {}
+  </script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <div class="top-row">
+        <div class="brand">
+          <div class="logo" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 11l3-3 2 2 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div>Centro de Inversión<small id="hdr-sub">Perfil moderado · Racional</small></div>
+        </div>
+        <div class="ctrl">
+          <label class="note" for="sel-informe">Informe</label>
+          <select id="sel-informe" aria-label="Seleccionar informe"></select>
+          <button class="btn" id="btn-tema" aria-label="Cambiar tema" title="Cambiar tema claro/oscuro">◐</button>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist" id="tabs"></nav>
+    </div>
+  </header>
+  <main class="wrap" id="main"></main>
+  <footer class="wrap">
+    Herramienta de apoyo a la decisión basada en reglas cuantitativas y datos públicos de mercado (Yahoo Finance). No es asesoría financiera ni una recomendación personalizada; rentabilidades pasadas no garantizan resultados futuros. Verifica precios y disponibilidad de cada instrumento en Racional antes de operar.
+  </footer>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="data/latest.js"></script>
+  <script src="data/archivo/indice.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
