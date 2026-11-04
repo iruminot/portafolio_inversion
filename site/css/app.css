@@ -223,3 +223,35 @@ tr.click { cursor: pointer; }
 .toast.on { opacity: 1; }
 .hidden { display: none !important; }
 footer { color: var(--muted); font-size: 12px; padding: 24px 0 40px; border-top: 1px solid var(--border); }
+
+/* Panel de operación y diálogos */
+dialog#dlg { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--ink); padding: 0; width: min(580px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+dialog#dlg::backdrop { background: rgba(0,0,0,.45); }
+.trade, .dlg-body { padding: 18px; display: grid; gap: 14px; }
+.dlg-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dlg-head h2 { font-size: 16px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.fields label { display: grid; gap: 4px; font-size: 12.5px; color: var(--ink-2); }
+.fields input, .fields select { width: 100%; }
+.pasos { margin: 0; padding-left: 20px; color: var(--ink-2); display: grid; gap: 8px; }
+.pasos b { color: var(--ink); }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.side { font-weight: 700; font-size: 12px; letter-spacing: .04em; padding: 3px 10px; border-radius: 6px; color: #fff; display: inline-block; }
+button.side { border: 0; cursor: pointer; font-family: inherit; min-height: 28px; }
+button.side:hover { filter: brightness(1.1); }
+button.side:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.qr { background: #fff; padding: 10px; border-radius: 10px; width: 240px; max-width: 100%; margin: 0 auto; min-height: 60px; display: grid; place-items: center; }
+.qr svg { display: block; width: 100%; height: auto; }
+.qr .note { color: #52514e; }
+
+/* Mejores opciones */
+.opt-col h3 { margin: 0 0 2px; color: var(--ink); font-size: 14px; }
+.opt { padding: 10px 0; border-top: 1px solid var(--grid); }
+.opt-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.opt-proj { display: flex; align-items: center; gap: 10px; margin: 6px 0 2px; flex-wrap: wrap; }
+.opt-txt { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.tk.click { cursor: pointer; text-decoration: underline dotted var(--axis); text-underline-offset: 3px; }
+.rango { flex: none; }
+.empty.sm { padding: 12px; font-size: 12.5px; }
+.tramos td.ok { color: var(--good-ink); font-weight: 600; }

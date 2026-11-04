@@ -25,13 +25,14 @@ El dashboard (`site/index.html`) se abre con doble clic. No necesita servidor ni
 
 ## Pestañas
 
-- **Resumen**: patrimonio en CLP/USD, asignación actual vs objetivo, riesgo diario, lo esencial y próximos movimientos.
+- **Resumen**: patrimonio en CLP/USD, asignación actual vs objetivo, riesgo diario, **mejores opciones para comprar / mantener / vender** con proyecciones a 1, 3 y 12 meses, **plan de inicio y aportes** con proyección Monte Carlo del patrimonio, lo esencial, próximos movimientos y **mi rendimiento** (vs S&P 500 y portafolio objetivo).
+- **Botones COMPRAR / VENDER** (en todas las pestañas): abren un panel para registrar la operación que hiciste en Racional (monto, precio real y fecha) sin cambiar de pestaña.
 - **Informe diario**: narrativa, tablero macro (VIX, tasa 10 años, DXY, USD/CLP, cobre, petróleo, oro), alertas, señales de los 22 activos y órdenes tácticas.
 - **Informe semanal**: cambios del portafolio objetivo, métricas de riesgo (VaR, peor mes, máxima caída), simulación de 3 años vs S&P 500 y 60/40, crisis reales y rebalanceo.
 - **Órdenes**: diarias y semanales con monto en USD/CLP, unidades y, para cada una, *día malo*, *si toca el stop*, *mes pesimista/central/optimista*, *si el S&P cae 10%* y su efecto en la volatilidad de tu portafolio.
 - **Escenarios**: 7 situaciones hipotéticas, 5 crisis reales y deslizadores (S&P, tasas, oro, cobre, USD/CLP). Compara tu portafolio vs el objetivo frente a tu tolerancia de pérdida.
 - **Activos**: precio con medias de 50/200 días, puntaje histórico, RSI y por qué tiene esa señal.
-- **Mis posiciones**: registra lo que tienes en Racional (se guarda en el navegador; exporta/importa JSON).
+- **Mis posiciones**: registra lo que tienes en Racional (se guarda en el navegador; exporta/importa JSON) y **llévalo a otro dispositivo con un código QR**.
 
 ## Configuración
 
@@ -65,3 +66,7 @@ El flujo `.github/workflows/informe.yml` corre **lunes a viernes a las 21:30 UTC
 También se ejecuta al hacer push de cambios en el código o la configuración, y a mano desde *Actions → Informe diario → Run workflow*.
 
 **Privacidad:** el sitio publicado contiene solo datos de mercado y `config/portafolio.json`. Tus posiciones reales se guardan en el navegador de cada dispositivo (pestaña *Mis posiciones*; usa Exportar/Importar JSON para pasarlas entre dispositivos). **No pongas posiciones ni montos reales en `config/portafolio.json` si el repositorio es público.**
+
+**Instalar como app:** en el celular abre el sitio y usa *Compartir → Agregar a pantalla de inicio* (iPhone) o *⋮ → Instalar app* (Android). El botón *Instalar app* del encabezado lo explica.
+
+**Aviso por correo:** cuando el informe diario detecta eventos nuevos (cambio de régimen, stop perforado, quiebre de tendencia, señal que pasa a COMPRAR o VENDER) el flujo crea un *issue* con la etiqueta `aviso` y GitHub te lo envía por email. Para probarlo: *Actions → Informe diario → Run workflow* marcando "Enviar un aviso de prueba".

@@ -392,6 +392,14 @@ class Motor:
             "sc_ayer": self.SC[t].iloc[i - 1], "sc_sem": self.SC[t].iloc[i - 5],
             "mom12_1": self.MOM[t].iloc[i],
         }
+        # Proyecciones: distribución histórica (≈10 años) de retornos a 1, 3 y 12 meses
+        proy = {}
+        for nombre, h in (("1m", 21), ("3m", 63), ("12m", 252)):
+            rh = (c / c.shift(h) - 1).dropna()
+            if len(rh) > 250:
+                proy[nombre] = {**{k: float(np.percentile(rh, q)) for k, q in (("p5", 5), ("p25", 25), ("p50", 50), ("p75", 75), ("p95", 95))},
+                                "pos": float((rh > 0).mean())}
+        out["proy"] = proy
         out["accion"] = etiqueta(out["sc"])
         out["accion_ayer"] = etiqueta(out["sc_ayer"])
         out["accion_sem"] = etiqueta(out["sc_sem"])
@@ -648,7 +656,7 @@ class Motor:
                      "usdclp": float(self.Praw["CLP=X"].dropna().iloc[-1]) if "CLP=X" in self.Praw else None},
             "reglas": self.reglas,
             "config": {"posiciones": self.cfg.get("posiciones", []), "efectivo_usd": self.cfg.get("efectivo_usd", 0),
-                       "efectivo_clp": self.cfg.get("efectivo_clp", 0)},
+                       "efectivo_clp": self.cfg.get("efectivo_clp", 0), "url_publica": self.cfg.get("url_publica", "")},
             "universo": self.univ,
             "regimen": {"hoy": reg, "ayer": reg1, "semana": reg5},
             "objetivo": obj, "objetivo_semana_pasada": obj5,
@@ -658,7 +666,18 @@ class Motor:
             "escenarios": esc, "historicos": hist, "riesgo": riesgo,
             "cov": {"tickers": list(cov.columns), "m": [[num(v * 1e4, 4) for v in row] for row in cov.values]},
             "series": {"fechas": fechas, "activos": series},
+            "mensual": self.mensual(),
         })
+
+    def mensual(self) -> dict:
+        """Retornos mensuales (≈10 años) por activo y USD/CLP, para el Monte Carlo del navegador."""
+        cols = self.tick + (["CLP=X"] if "CLP=X" in self.P else [])
+        M = self.P[cols].resample("ME").last()
+        M = M.iloc[:-1]  # el último mes está en curso: se excluye
+        R = M.pct_change(fill_method=None).iloc[1:]
+        return {"fechas": [d.strftime("%Y-%m") for d in R.index],
+                "r": {t: [num(v, 5) for v in R[t].values] for t in self.tick},
+                "fx": [num(v, 5) for v in R["CLP=X"].values] if "CLP=X" in R else None}
 
 
 def decimal_cl(t: str) -> str:
@@ -667,7 +686,43 @@ def decimal_cl(t: str) -> str:
     return re.sub(r"(?<=\d)\.(?=\d)", ",", t)
 
 
-def escribir(rep: dict):
+def eventos(rep: dict, prev: dict | None) -> list[str]:
+    """Eventos nuevos respecto del informe anterior (para el aviso por correo)."""
+    if not prev or prev.get("meta", {}).get("fecha_datos") == rep["meta"]["fecha_datos"]:
+        return []
+    ev = []
+    r0, r1 = prev["regimen"]["hoy"]["nombre"], rep["regimen"]["hoy"]["nombre"]
+    if r0 != r1:
+        ev.append(f"**Cambio de régimen:** {r0} → {r1}.")
+    antes = {(a["ticker"], a["nivel"]) for a in prev.get("alertas", [])}
+    for a in rep["alertas"]:
+        if a["nivel"] in ("critico", "serio") and (a["ticker"], a["nivel"]) not in antes:
+            ev.append(f"**{a['ticker']}:** {a['texto']}")
+    acc0 = {a["ticker"]: a["accion"] for a in prev.get("activos", [])}
+    for a in rep["activos"]:
+        if a["accion"] in ("COMPRAR", "VENDER") and acc0.get(a["ticker"]) not in (None, a["accion"]):
+            ev.append(f"**{a['ticker']}:** señal {acc0[a['ticker']]} → {a['accion']}.")
+    return ev
+
+
+def escribir(rep: dict, forzar_aviso: bool = False):
+    prev = None
+    try:
+        t = (OUT / "latest.js").read_text(encoding="utf-8")
+        prev = json.loads(t[t.index("=") + 1:].rstrip().rstrip(";"))
+    except Exception:  # noqa: BLE001 — primer informe o archivo ilegible
+        prev = None
+    ev = eventos(rep, prev)
+    aviso = ROOT / "data" / "aviso.md"
+    aviso.unlink(missing_ok=True)
+    if ev or forzar_aviso:
+        url = rep["config"].get("url_publica") or ""
+        cuerpo = [f"Informe al cierre del **{rep['meta']['fecha_datos']}** · régimen **{rep['regimen']['hoy']['nombre']}**.", ""]
+        cuerpo += [f"- {e}" for e in ev] or ["- (aviso de prueba: sin eventos nuevos)"]
+        cuerpo += ["", f"[Abrir el dashboard]({url})" if url else "", "",
+                   "_Eventos de mercado del universo, no de tus posiciones (que viven solo en tu navegador). No es asesoría financiera._"]
+        aviso.parent.mkdir(parents=True, exist_ok=True)
+        aviso.write_text(decimal_cl("\n".join(cuerpo)), encoding="utf-8")
     for k in ("narrativa_diaria", "narrativa_semanal", "alertas"):
         for n in rep[k]:
             n["texto"] = decimal_cl(n["texto"])
@@ -693,11 +748,12 @@ def escribir(rep: dict):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--intradia", action="store_true", help="incluir la vela parcial de hoy")
+    ap.add_argument("--forzar-aviso", action="store_true", help="generar data/aviso.md aunque no haya eventos (prueba)")
     args = ap.parse_args()
     cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
     t0 = time.time()
     rep = Motor(cfg, args.intradia).construir()
-    escribir(rep)
+    escribir(rep, args.forzar_aviso)
     reg = rep["regimen"]["hoy"]
     print(f"✔ Informe generado con datos al {rep['meta']['fecha_datos']} en {time.time()-t0:.1f}s")
     print(f"  Régimen: {reg['nombre']} · VIX {reg['vix']:.1f} · USD/CLP {rep['meta']['usdclp']:.1f}")

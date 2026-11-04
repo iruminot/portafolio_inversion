@@ -6,6 +6,13 @@
   <title>Centro de Inversión</title>
   <meta name="description" content="Informes de inteligencia diarios y semanales, órdenes de compra/venta y escenarios para un portafolio de riesgo medio en Racional.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a78d6'/%3E%3Cpath d='M7 21l6-6 4 4 8-9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="theme-color" content="#2a78d6">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Inversión">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="css/app.css">
   <script>
     try { var t = localStorage.getItem("inv.tema"); if (t) document.documentElement.setAttribute("data-theme", JSON.parse(t)); } catch (e) {}
@@ -24,6 +31,7 @@
         <div class="ctrl">
           <label class="note" for="sel-informe">Informe</label>
           <select id="sel-informe" aria-label="Seleccionar informe"></select>
+          <button class="btn hidden" id="btn-instalar" title="Instalar como app en tu dispositivo">Instalar app</button>
           <button class="btn" id="btn-tema" aria-label="Cambiar tema" title="Cambiar tema claro/oscuro">◐</button>
         </div>
       </div>
@@ -34,6 +42,7 @@
   <footer class="wrap">
     Herramienta de apoyo a la decisión basada en reglas cuantitativas y datos públicos de mercado (Yahoo Finance). No es asesoría financiera ni una recomendación personalizada; rentabilidades pasadas no garantizan resultados futuros. Verifica precios y disponibilidad de cada instrumento en Racional antes de operar.
   </footer>
+  <dialog id="dlg" aria-modal="true"></dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="data/latest.js"></script>

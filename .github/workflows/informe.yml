@@ -5,13 +5,19 @@ on:
     # Lunes a viernes 21:30 UTC = 18:30 Chile (verano) / 17:30 (invierno), después del cierre de Nueva York.
     # GitHub puede retrasar las ejecuciones programadas entre algunos minutos y ~1 hora.
     - cron: "30 21 * * 1-5"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      forzar_aviso:
+        description: "Enviar un aviso de prueba aunque no haya eventos"
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths: ["engine/**", "config/**", "site/css/**", "site/js/**", "site/index.html", ".github/workflows/**"]
 
 permissions:
   contents: write
+  issues: write
   pages: write
   id-token: write
 
@@ -34,7 +40,16 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Generar informes
-        run: python engine/motor.py
+        run: python engine/motor.py ${{ inputs.forzar_aviso && '--forzar-aviso' || '' }}
+
+      - name: Aviso por correo (issue) si hay eventos nuevos
+        if: hashFiles('data/aviso.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create aviso --color D03B3B --description "Avisos automáticos del portafolio" --force
+          for n in $(gh issue list --label aviso --state open --json number --jq '.[].number'); do gh issue close "$n" --reason completed; done
+          gh issue create --title "Aviso del portafolio · $(date -u +%d-%m-%Y)" --label aviso --body-file data/aviso.md
 
       - name: Guardar informe en el historial
         run: |

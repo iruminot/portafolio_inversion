@@ -75,6 +75,7 @@
     sort: { k: "sc", dir: -1 },
     activo: LS.get("inv.activo", "VOO"),
     esc: { modo: "ambos", preset: "correccion", f: null },
+    plan: LS.get("inv.plan", { aporte: 0, horizonte: 5, supuesto: "conservador" }),
   };
 
   function indexar() {
@@ -265,7 +266,7 @@
       : `Para decidir: vender reduce tu riesgo, pero si el activo rebota no participas del alza.`;
     return `<article class="order ${marca ? "done" : ""}" data-key="${esc(o.key)}">
       <div class="order-top">
-        <span class="side ${compra ? "buy" : "sell"}">${compra ? "COMPRAR" : "VENDER"}</span>
+        ${marca ? `<span class="side ${compra ? "buy" : "sell"}">${compra ? "COMPRAR" : "VENDER"}</span>` : `<button class="side ${compra ? "buy" : "sell"}" ${tradeAttrs(a.ticker, o.monto, o.key, o.tipo)} title="Registrar esta operación">${compra ? "COMPRAR" : "VENDER"} ›</button>`}
         <span class="tk">${esc(a.ticker)}</span><span class="nm">${esc(a.nombre)}</span>
         <span class="badge b-${a.accion}" title="Señal del modelo para el activo"><span class="dot"></span>Señal: ${a.accion}</span>
         ${marca ? `<span class="badge ${marca === "ejecutada" ? "good" : ""}"><span class="dot"></span>${marca === "ejecutada" ? "Ejecutada" : "Descartada"}</span>` : ""}
@@ -274,35 +275,11 @@
       <div class="why">${esc(o.motivo)} ${o.nota ? `<b>${esc(o.nota)}</b>` : ""}</div>
       ${compacta ? "" : `<div class="sc-grid">${grid}</div><p class="note" style="margin:10px 0 0">${decide}</p>`}
       ${compacta ? "" : `<div class="order-actions">
-        ${marca ? `<button class="btn sm" data-act="deshacer">Deshacer marca</button>` : `<button class="btn sm primary" data-act="ejecutar">Registrar como ejecutada</button><button class="btn sm" data-act="descartar">Descartar</button>`}
+        ${marca ? `<button class="btn sm" data-act="deshacer">Deshacer marca</button>` : `<button class="btn sm primary" ${tradeAttrs(a.ticker, o.monto, o.key, o.tipo)}>${compra ? "Comprar" : "Vender"} y registrar</button><button class="btn sm" data-act="descartar">Descartar</button>`}
         <button class="btn sm ghost" data-act="ver" data-t="${esc(a.ticker)}">Ver activo →</button>
         <span class="hint">${a.tipo_stop ? "Stop: " + usd(a.stop) + " (" + esc(a.tipo_stop) + ")" : ""}</span>
       </div>`}
     </article>`;
-  }
-
-  function registrarEjecucion(o) {
-    const a = o.a, m = o.monto, q = m / a.precio;
-    const p = S.pos.posiciones.find((x) => x.ticker === a.ticker);
-    if (p) {
-      const q0 = +p.cantidad || 0, nq = Math.max(0, q0 + q);
-      if (m > 0) p.costo_promedio = (q0 * (+p.costo_promedio || 0) + m) / nq;
-      p.cantidad = +nq.toFixed(6);
-      if (p.cantidad <= 1e-6) S.pos.posiciones = S.pos.posiciones.filter((x) => x !== p);
-    } else if (m > 0) {
-      S.pos.posiciones.push({ ticker: a.ticker, cantidad: +q.toFixed(6), costo_promedio: a.precio });
-    }
-    if (m > 0) {
-      let falta = m;
-      const u = Math.min(+S.pos.efectivo_usd || 0, falta);
-      S.pos.efectivo_usd = +((+S.pos.efectivo_usd || 0) - u).toFixed(2); falta -= u;
-      if (falta > 0) S.pos.efectivo_clp = Math.max(0, Math.round((+S.pos.efectivo_clp || 0) - falta * FX));
-    } else {
-      S.pos.efectivo_usd = +((+S.pos.efectivo_usd || 0) - m).toFixed(2);
-    }
-    S.log.unshift({ fecha: new Date().toISOString().slice(0, 16).replace("T", " "), tipo: o.tipo, ticker: a.ticker, monto: m, precio: a.precio, cantidad: q });
-    S.marcas[o.key] = "ejecutada";
-    guardarPos(); LS.set("inv.log.v1", S.log); LS.set("inv.ordenes.v1", S.marcas);
   }
 
   // ------------------------------------------------------------------ componentes
@@ -333,6 +310,437 @@
       ${CLASES.filter((c) => act[c] > 0.0005 || obj[c] > 0.0005).map((c) => `<tr><td><span class="legend" style="margin:0"><span><i class="sq" style="background:${COLOR_CLASE[c]}"></i>${esc(c)}</span></span></td><td class="n">${pct(act[c], 1, false)}</td><td class="n">${pct(obj[c], 1, false)}</td><td class="n">${pct(obj[c] - act[c], 1)}</td></tr>`).join("")}
     </tbody></table></div>`;
   }
+
+  // ------------------------------------------------------------------ proyecciones
+  const HZ = { "1m": 1 / 12, "3m": 0.25, "12m": 1 };
+  const muCons = (t) => 0.04 + 0.04 * Math.max(0, (A[t] && A[t].betas && A[t].betas.spx) || 0);
+  function probGanar(p) {
+    const pts = [[0.05, p.p5], [0.25, p.p25], [0.5, p.p50], [0.75, p.p75], [0.95, p.p95]];
+    if (p.p5 >= 0) return 0.97;
+    if (p.p95 <= 0) return 0.03;
+    for (let k = 0; k < 4; k++) {
+      const [q0, v0] = pts[k], [q1, v1] = pts[k + 1];
+      if (v0 <= 0 && v1 >= 0) return 1 - (q0 + ((0 - v0) / (v1 - v0 || 1)) * (q1 - q0));
+    }
+    return 0.5;
+  }
+  /** Rango proyectado de un activo: histórico, o centrado en un retorno prudente (conservador). */
+  function proy(t, h) {
+    const p = A[t] && A[t].proy && A[t].proy[h];
+    if (!p) return null;
+    if (S.plan.supuesto === "historico") return { ...p, pos: p.pos != null ? p.pos : probGanar(p) };
+    // desplazamiento en escala logarítmica: conserva la forma del rango sin producir pérdidas imposibles
+    const sh = HZ[h] * Math.log(1 + muCons(t)) - Math.log(1 + p.p50);
+    const mv = (v) => Math.exp(Math.log(1 + v) + sh) - 1;
+    const q = { p5: mv(p.p5), p25: mv(p.p25), p50: mv(p.p50), p75: mv(p.p75), p95: mv(p.p95) };
+    q.pos = probGanar(q);
+    return q;
+  }
+  const supuestoTxt = () => S.plan.supuesto === "historico" ? "Histórico (10 años)" : "Conservador";
+
+  /** Retornos mensuales en CLP de un portafolio con pesos w (rebalanceo mensual). */
+  function retornosMensuales(w) {
+    const M = R.mensual, n = M.fechas.length, cons = S.plan.supuesto !== "historico";
+    const adj = {};
+    Object.keys(w).forEach((t) => {
+      const r = M.r[t]; if (!r) return;
+      const v = r.filter((x) => x != null), media = v.reduce((s, x) => s + x, 0) / (v.length || 1);
+      const obj = Math.pow(1 + muCons(t), 1 / 12) - 1;
+      adj[t] = r.map((x) => (x == null ? null : cons ? x - media + obj : x));
+    });
+    const fx = M.fx || [], fv = fx.filter((x) => x != null), fm = fv.reduce((s, x) => s + x, 0) / (fv.length || 1);
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      let r = 0, ws = 0;
+      Object.entries(w).forEach(([t, wt]) => { const a = adj[t]; if (a && a[i] != null) { r += wt * a[i]; ws += wt; } });
+      if (ws > 0) r /= ws;
+      const f = fx[i] == null ? 0 : cons ? fx[i] - fm : fx[i];
+      out.push((1 + r) * (1 + f) - 1);
+    }
+    return out;
+  }
+  function rng(seed) {
+    return () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  }
+  let _mc = null;
+  /** Monte Carlo por remuestreo de meses reales (bootstrap), con aporte mensual. */
+  function monteCarlo(capital, aporte, meses, w, n = 2000) {
+    const key = [capital, aporte, meses, S.plan.supuesto, R.meta.fecha_datos].join("|");
+    if (_mc && _mc.key === key) return _mc.res;
+    const rets = retornosMensuales(w), L = rets.length, rand = rng(42);
+    const cols = Array.from({ length: meses + 1 }, () => new Float64Array(n));
+    for (let k = 0; k < n; k++) {
+      let v = capital; cols[0][k] = v;
+      for (let m = 1; m <= meses; m++) { v = v * (1 + rets[Math.floor(rand() * L)]) + aporte; cols[m][k] = v; }
+    }
+    const q = (c, p) => c[Math.min(c.length - 1, Math.floor(p * c.length))];
+    const res = { p5: [], p25: [], p50: [], p75: [], p95: [], aportado: [], perdida: [] };
+    cols.forEach((c, m) => {
+      c.sort();
+      res.p5.push(q(c, 0.05)); res.p25.push(q(c, 0.25)); res.p50.push(q(c, 0.5)); res.p75.push(q(c, 0.75)); res.p95.push(q(c, 0.95));
+      const ap = capital + aporte * m; res.aportado.push(ap);
+      let lo = 0; while (lo < n && c[lo] < ap - 1) lo++;
+      res.perdida.push(m === 0 ? 0 : lo / n);
+    });
+    _mc = { key, res };
+    return res;
+  }
+
+  // ------------------------------------------------------------------ mejores opciones
+  const tradeAttrs = (t, monto, key = "", tipo = "opcion") => `data-trade="1" data-t="${esc(t)}" data-monto="${monto}" data-key="${esc(key)}" data-tipo="${tipo}"`;
+  function opcionesHTML(pf) {
+    const rg = R.reglas, minUSD = rg.orden_minima_usd || 10, entrada = pf.cashW > 0.3, tramos = rg.tramos_entrada || 4;
+    const all = R.activos.map((a) => { const tw = R.objetivo.pesos[a.ticker] || 0, cur = pf.val[a.ticker] || 0; return { a, tw, cur, gap: tw * pf.total - cur }; });
+    const comprar = all.filter((x) => x.tw > 0 && x.a.sc >= 15 && x.a.clase !== "Liquidez")
+      .map((x) => ({ ...x, monto: x.gap > 0 ? (entrada ? x.gap / tramos : x.gap) : 0 }))
+      .filter((x) => x.monto >= minUSD).sort((p, q) => q.a.sc - p.a.sc).slice(0, 5);
+    const vender = all.filter((x) => x.a.sc <= -15 || (x.a.stop_activo && x.a.bloque === "satelite"))
+      .map((x) => {
+        let m = 0;
+        if (x.cur > 0) m = x.tw === 0 || x.a.accion === "VENDER" || (x.a.stop_activo && x.a.bloque === "satelite") ? x.cur : Math.max(-x.gap, 0);
+        return { ...x, monto: m >= minUSD ? -m : 0 };
+      })
+      .sort((p, q) => (q.cur > 0) - (p.cur > 0) || p.a.sc - q.a.sc).slice(0, 5);
+    const sv = new Set(vender.map((x) => x.a.ticker)), sc = new Set(comprar.map((x) => x.a.ticker));
+    let mantener = all.filter((x) => x.cur > 0 && !sv.has(x.a.ticker)).sort((p, q) => q.cur - p.cur);
+    if (!mantener.length) mantener = all.filter((x) => x.tw > 0 && !sc.has(x.a.ticker) && !sv.has(x.a.ticker) && x.a.clase !== "Liquidez").sort((p, q) => q.tw - p.tw);
+    mantener = mantener.slice(0, 5).map((x) => ({ ...x, monto: 0 }));
+    const ps = [...comprar, ...mantener, ...vender].map((x) => proy(x.a.ticker, "12m")).filter(Boolean);
+    const mn = Math.max(-0.5, Math.min(-0.05, ...ps.map((p) => p.p5)));
+    const mx = Math.min(0.8, Math.max(0.1, ...ps.map((p) => p.p95)));
+    const fila = (x, tipo) => {
+      const a = x.a, p1 = proy(a.ticker, "1m"), p3 = proy(a.ticker, "3m"), p12 = proy(a.ticker, "12m");
+      const btn = x.monto > 0 ? `<button class="side buy" ${tradeAttrs(a.ticker, x.monto)}>COMPRAR ${usd(x.monto)} ›</button>`
+        : x.monto < 0 ? `<button class="side sell" ${tradeAttrs(a.ticker, x.monto)}>VENDER ${usd(-x.monto)} ›</button>` : "";
+      const estado = tipo === "mantener" ? (x.cur > 0 ? `Tienes ${clpC(x.cur * FX)} · obj. ${pct(x.tw, 1, false)}` : `En el objetivo (${pct(x.tw, 1, false)}), sin urgencia`)
+        : tipo === "vender" ? (x.cur > 0 ? `<b>La tienes: ${clpC(x.cur * FX)}</b>` : "No la tienes: evitar por ahora")
+        : `Objetivo ${pct(x.tw, 1, false)} · hoy ${pct(pf.w[a.ticker] || 0, 1, false)}${entrada ? ` · tramo 1 de ${tramos}` : ""}`;
+      return `<div class="opt">
+        <div class="opt-top"><span class="tk click" data-ver="${esc(a.ticker)}" title="Ver detalle">${esc(a.ticker)}</span><span class="nm">${esc(a.nombre)}</span>${badge(a.accion)}</div>
+        ${p12 ? `<div class="opt-proj">${Charts.rango(p12, mn, mx)}<span class="opt-txt">12m: ${pct(p12.p5, 0)} · <b>${pct(p12.p50, 0)}</b> · ${pct(p12.p95, 0)}</span></div>` : ""}
+        <div class="note">1m ${pct(p1 && p1.p50)} · 3m ${pct(p3 && p3.p50)} · prob. de ganar en 12m <b>${pct(p12 && p12.pos, 0, false)}</b></div>
+        <div class="note">${estado}</div>
+        ${btn ? `<div style="margin-top:8px">${btn}</div>` : ""}</div>`;
+    };
+    const col = (tit, sub, arr, tipo) => `<div class="opt-col"><h3>${tit}</h3><p class="note" style="margin:0 0 4px">${sub}</p>${arr.length ? arr.map((x) => fila(x, tipo)).join("") : `<div class="empty sm">Nada por ahora.</div>`}</div>`;
+    return `<div class="card">
+      <div class="card-head"><div><h2>Mejores opciones hoy</h2><p class="sub">Según las señales del modelo y tu portafolio. Barra: rango a 12 meses (pesimista 5% – optimista 95%), punto = escenario central. Supuesto: <b>${supuestoTxt()}</b>.</p></div>
+      <div class="seg" role="group" aria-label="Supuesto de proyección">${[["conservador", "Conservador"], ["historico", "Histórico"]].map(([v, l]) => `<button data-sup="${v}" aria-pressed="${S.plan.supuesto === v}">${l}</button>`).join("")}</div></div>
+      <div class="grid g3">
+        ${col("Comprar", entrada ? `Montos = tramo de entrada (1 de ${tramos})` : "Señal positiva y bajo tu peso objetivo", comprar, "comprar")}
+        ${col("Mantener", pf.inv > 0 ? "Lo que ya tienes y sigue bien" : "Núcleo del portafolio, sin urgencia", mantener, "mantener")}
+        ${col("Vender / evitar", "Señal negativa o stop perforado", vender, "vender")}
+      </div>
+      <p class="note" style="margin:12px 0 0">Proyecciones basadas en la variación real de cada activo en ~10 años${S.plan.supuesto === "historico" ? "; reflejan un periodo muy alcista y pueden sobreestimar" : ", centradas en un retorno prudente (4% + 4% × beta del activo)"}. No son promesas.</p>
+    </div>`;
+  }
+
+  // ------------------------------------------------------------------ plan de inicio y aportes
+  const DIAS = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+  function proximoLunes(k) { const d = new Date(); d.setHours(12); d.setDate(d.getDate() + ((8 - d.getDay()) % 7) + 7 * k); return d; }
+  const fechaLarga = (d) => `${DIAS[d.getDay()]} ${d.getDate()} ${MES[d.getMonth()]}`;
+  function planHTML(pf) {
+    const rg = R.reglas, tramos = rg.tramos_entrada || 4;
+    const cashCLP = pf.cashUSD * FX + pf.cashCLP;
+    const entrada = pf.cashW > 0.3;
+    const hechos = Math.min(tramos - 1, Math.round((1 - pf.cashW) * tramos));
+    const rest = Math.max(1, tramos - hechos);
+    const tramoCLP = cashCLP / rest;
+    const ap = +S.plan.aporte || 0, hz = +S.plan.horizonte || 5;
+    const anios = [1, 3, 5, 10].filter((y) => y <= hz); if (!anios.includes(hz)) anios.push(hz);
+    const mc = monteCarlo(pf.totalCLP, ap, hz * 12, R.objetivo.pesos);
+    let pasos = "";
+    if (entrada) {
+      pasos += `<li><b>Etapa 1 · Entrada escalonada.</b> Invierte tu efectivo en ${tramos} tramos semanales${hechos ? ` (llevas ${hechos})` : ""}. Así no apuestas todo a un solo día.
+        <div class="table-wrap"><table class="tramos"><thead><tr><th>Tramo</th><th>Semana del</th><th class="n">Monto</th><th></th></tr></thead><tbody>
+        ${Array.from({ length: hechos }, (_, k) => `<tr><td>${k + 1}</td><td class="note">—</td><td class="n note">—</td><td class="ok">✓ hecho</td></tr>`).join("")}
+        ${Array.from({ length: rest }, (_, k) => `<tr><td>${hechos + k + 1}</td><td>${fechaLarga(proximoLunes(k))}</td><td class="n">${clp(tramoCLP)}</td><td>${k === 0 ? `<button class="btn sm" data-go="ordenes" data-ordtipo="semanal">Ver órdenes</button>` : ""}</td></tr>`).join("")}
+        </tbody></table></div>
+        <span class="note">Cada tramo: convierte ~${clp(tramoCLP)} a USD en Racional y ejecuta las órdenes semanales (el sistema reparte el monto según el objetivo).</span></li>`;
+    } else {
+      pasos += `<li><b>Ya estás invertido (${pct(1 - pf.cashW, 0, false)}).</b> Estás en la etapa de mantención: el foco es aportar con constancia y rebalancear.</li>`;
+    }
+    pasos += `<li><b>Cada mes:</b> ${ap > 0 ? `transfiere <b>${clp(ap)}</b> a Racional, conviértelos a USD y` : "define abajo cuánto puedes aportar. Luego"} ejecuta el rebalanceo semanal: las compras se dirigen a lo que esté bajo su peso objetivo.</li>
+      <li><b>Cada semana (ej. lunes, 10 min):</b> lee el Informe semanal y ejecuta las órdenes de rebalanceo.</li>
+      <li><b>Cada día hábil (2 min, opcional):</b> revisa alertas y stops. Las órdenes diarias son ajustes finos, no obligatorios.</li>
+      <li><b>Cada trimestre:</b> revisa si tu tolerancia o tus metas cambiaron (pestaña Escenarios).</li>`;
+    const filas = anios.map((y) => { const m = y * 12; return `<tr><td>${y} año${y > 1 ? "s" : ""}</td><td class="n">${clpC(mc.aportado[m])}</td><td class="n">${clpC(mc.p5[m])}</td><td class="n"><b>${clpC(mc.p50[m])}</b></td><td class="n">${clpC(mc.p95[m])}</td><td class="n">${pct(mc.perdida[m], 0, false)}</td></tr>`; }).join("");
+    return `<div class="card">
+      <div class="card-head"><div><h2>Cómo comenzar y continuar</h2><p class="sub">Tu hoja de ruta y la proyección de tu patrimonio con el portafolio objetivo</p></div></div>
+      <div class="grid g2">
+        <div><ol class="pasos">${pasos}</ol></div>
+        <div>
+          <div class="fields" style="margin-bottom:10px">
+            <label>Aporte mensual (CLP)<input type="number" min="0" step="10000" id="in-aporte" value="${ap}"></label>
+            <label>Horizonte<select id="sel-hz">${[1, 2, 3, 5, 10].map((y) => `<option value="${y}" ${y === hz ? "selected" : ""}>${y} año${y > 1 ? "s" : ""}</option>`).join("")}</select></label>
+          </div>
+          <div id="ch-plan"></div>
+          <div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>Plazo</th><th class="n">Aportado</th><th class="n">Pesimista</th><th class="n">Central</th><th class="n">Optimista</th><th class="n" title="Probabilidad de terminar con menos de lo aportado">Prob. pérdida</th></tr></thead><tbody>${filas}</tbody></table></div>
+          <p class="note">Monte Carlo: 2.000 trayectorias remuestreando meses reales de los últimos ~10 años (incluye el efecto del dólar en CLP). Supuesto ${supuestoTxt().toLowerCase()}. Supone que tu capital queda invertido según el portafolio objetivo. Pesimista/optimista = percentiles 5 y 95.</p>
+        </div>
+      </div></div>`;
+  }
+  function planChart(pf) {
+    const el = $("#ch-plan"); if (!el) return;
+    const hz = +S.plan.horizonte || 5;
+    const mc = monteCarlo(pf.totalCLP, +S.plan.aporte || 0, hz * 12, R.objetivo.pesos);
+    const lab = mc.p50.map((_, m) => m);
+    Charts.line(el, {
+      labels: lab, height: 240, ml: 64,
+      xfmt: (m) => (m === 0 ? "Hoy" : m % 12 === 0 ? `Año ${m / 12}` : `Mes ${m}`),
+      xfmtLong: (m) => (m === 0 ? "Hoy" : `Mes ${m}${m >= 12 ? ` (año ${nf(1).format(m / 12)})` : ""}`),
+      yfmt: (v) => clpC(v), tfmt: (v) => clpC(v),
+      bands: [{ lo: mc.p5, hi: mc.p95, color: "var(--s1)", opacity: 0.1 }, { lo: mc.p25, hi: mc.p75, color: "var(--s1)", opacity: 0.18 }],
+      series: [{ name: "Central", values: mc.p50, color: "var(--s1)" }, { name: "Aportado", values: mc.aportado, color: "var(--ink-2)", width: 1.5 }],
+      tipExtra: (i) => `<div class="r"><span>Optimista (p95)</span><b>${clpC(mc.p95[i])}</b></div><div class="r"><span>Pesimista (p5)</span><b>${clpC(mc.p5[i])}</b></div><div class="r"><span>Prob. de pérdida</span><b>${pct(mc.perdida[i], 0, false)}</b></div>`,
+      aria: "Proyección del patrimonio",
+    });
+  }
+
+  // ------------------------------------------------------------------ mi rendimiento
+  function rendimiento() {
+    const F = R.series.fechas;
+    const ops = S.log.filter((l) => R.series.activos[l.ticker] && l.precio > 0)
+      .map((l) => ({ ...l, d: String(l.fecha).slice(0, 10) })).sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+    if (!ops.length) return null;
+    const idx = (d) => { const i = F.findIndex((f) => f >= d); return i < 0 ? F.length - 1 : i; };
+    const C = (t, i) => (R.series.activos[t] ? R.series.activos[t].c[i] : null);
+    const W = R.objetivo.pesos;
+    const qty = {}, qV = {}, qO = {};
+    let neto = 0, k = 0;
+    const out = { fechas: [], tu: [], voo: [], obj: [], neto: [] };
+    for (let i = idx(ops[0].d); i < F.length; i++) {
+      while (k < ops.length && idx(ops[k].d) <= i) {
+        const o = ops[k++];
+        qty[o.ticker] = (qty[o.ticker] || 0) + o.cantidad; neto += o.monto;
+        const pv = C("VOO", i); if (pv) qV.VOO = (qV.VOO || 0) + o.monto / pv;
+        Object.entries(W).forEach(([t, w]) => { const p = C(t, i); if (p) qO[t] = (qO[t] || 0) + (o.monto * w) / p; });
+      }
+      const val = (q) => Object.entries(q).reduce((s, [t, n]) => s + n * (C(t, i) || 0), 0);
+      out.fechas.push(F[i]); out.tu.push(val(qty)); out.voo.push(val(qV)); out.obj.push(val(qO)); out.neto.push(neto);
+    }
+    return out;
+  }
+  function rendimientoHTML(pf) {
+    const r = rendimiento();
+    if (!r) return `<div class="card"><h2>Mi rendimiento</h2><p class="sub">Cómo te ha ido vs el S&P 500 y el portafolio objetivo</p><div class="empty">Cuando registres operaciones (con el botón COMPRAR/VENDER o "Registrar operación" en Mis posiciones), aquí verás tu evolución comparada con haber puesto el mismo dinero, en las mismas fechas, en el S&P 500 o en el portafolio objetivo.</div></div>`;
+    const n = r.tu.length - 1, tu = r.tu[n], neto = r.neto[n], res = tu - neto;
+    const dv = tu - r.voo[n], dobj = tu - r.obj[n];
+    const sinLog = S.pos.posiciones.filter((p) => { const ql = S.log.filter((l) => l.ticker === p.ticker).reduce((s, l) => s + l.cantidad, 0); return Math.abs(ql - p.cantidad) > 1e-4; });
+    return `<div class="card"><div class="card-head"><div><h2>Mi rendimiento</h2><p class="sub">Tus operaciones registradas vs el mismo dinero, en las mismas fechas, en el S&P 500 o en el portafolio objetivo (USD)</p></div></div>
+      <div class="tiles" style="margin-bottom:12px">
+        <div class="tile"><div class="label">Valor de lo invertido</div><div class="value">${usd(tu)}</div><div class="delta">${clp(tu * FX)}</div></div>
+        <div class="tile"><div class="label">Resultado</div><div class="value ${cls(res)}">${susd(res)}</div><div class="delta">${neto > 0 ? pct(res / neto) + " sobre lo aportado" : ""}</div></div>
+        <div class="tile"><div class="label">vs S&P 500</div><div class="value ${cls(dv)}">${susd(dv)}</div><div class="delta">${dv >= 0 ? "le ganas" : "pierdes"} al índice</div></div>
+        <div class="tile"><div class="label">vs portafolio objetivo</div><div class="value ${cls(dobj)}">${susd(dobj)}</div><div class="delta">${Math.abs(dobj) < 1 ? "igual" : dobj > 0 ? "mejor que el modelo" : "peor que el modelo"}</div></div>
+      </div>
+      ${r.tu.length >= 3 ? `<div id="ch-rend"></div>` : `<div class="empty sm">Vuelve en unos días para ver la evolución en el gráfico.</div>`}
+      ${sinLog.length ? `<p class="note">${ICON.info} ${sinLog.map((p) => esc(p.ticker)).join(", ")}: la cantidad en Mis posiciones no calza con tus operaciones registradas; la diferencia no se incluye aquí. Regístrala con "Registrar operación" indicando la fecha.</p>` : ""}
+    </div>`;
+  }
+  function rendimientoChart() {
+    const el = $("#ch-rend"); if (!el) return;
+    const r = rendimiento();
+    Charts.line(el, {
+      labels: r.fechas, height: 240, endLabels: true, xfmt: fechaDia, xfmtLong: fecha, ml: 60,
+      yfmt: (v) => "US$" + nf(0).format(v), tfmt: (v) => usd(v),
+      series: [{ name: "Tu portafolio", values: r.tu, color: "var(--s1)" }, { name: "Mismo dinero en S&P 500", values: r.voo, color: "var(--s2)" },
+        { name: "Mismo dinero en objetivo", values: r.obj, color: "var(--s3)" }, { name: "Aportado neto", values: r.neto, color: "var(--ink-2)", width: 1.5 }],
+      aria: "Mi rendimiento",
+    });
+  }
+
+  // ------------------------------------------------------------------ panel de operación
+  function hoyISO() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+  function dialogo(html) {
+    const dlg = $("#dlg");
+    dlg.innerHTML = html;
+    $$("[data-close]", dlg).forEach((b) => b.addEventListener("click", () => dlg.close()));
+    if (!dlg.open) dlg.showModal();
+    return dlg;
+  }
+  function abrirTrade(cfg) {
+    const t0 = A[cfg.t] ? cfg.t : "VOO";
+    const st = { t: t0, lado: (+cfg.monto || 0) < 0 ? "vender" : "comprar", monto: Math.abs(+cfg.monto || 0), precio: A[t0].precio, fecha: hoyISO(), key: cfg.key || "", tipo: cfg.tipo || "manual", libre: !!cfg.libre };
+    const opts = R.activos.map((a) => `<option value="${esc(a.ticker)}" ${a.ticker === st.t ? "selected" : ""}>${esc(a.ticker)} — ${esc(a.nombre)}</option>`).join("");
+    const dlg = dialogo(`<form class="trade" id="tr-form" novalidate>
+      <div class="dlg-head"><span class="side" id="tr-side"></span><b id="tr-tk" class="tk"></b><span class="nm" id="tr-nm"></span><button type="button" class="btn sm ghost" data-close aria-label="Cerrar" style="margin-left:auto">✕</button></div>
+      ${st.libre ? `<div class="fields"><label>Operación<span class="seg" role="group"><button type="button" data-lado="comprar">Compra</button><button type="button" data-lado="vender">Venta</button></span></label><label>Activo<select id="tr-t">${opts}</select></label></div>` : ""}
+      <ol class="pasos">
+        <li>En Racional busca <b class="tr-tk2"></b> <button type="button" class="btn sm" id="tr-copy">Copiar ticker</button></li>
+        <li id="tr-instr"></li>
+        <li>Anota aquí el monto y el precio reales que obtuviste, y confirma.</li>
+      </ol>
+      <div class="fields">
+        <label>Monto (USD)<input type="number" inputmode="decimal" step="0.01" min="0" id="tr-monto"></label>
+        <label>Precio de ejecución (USD)<input type="number" inputmode="decimal" step="0.0001" min="0" id="tr-precio"></label>
+        <label>Fecha<input type="date" id="tr-fecha" max="${hoyISO()}"></label>
+      </div>
+      <div id="tr-sum" class="sc-grid"></div>
+      <p class="note" id="tr-warn" style="margin:0"></p>
+      <div class="dlg-actions"><button type="button" class="btn" data-close>Cancelar</button><button type="submit" class="btn primary" id="tr-ok"></button></div>
+    </form>`);
+    $("#tr-monto").value = st.monto ? st.monto.toFixed(2) : "";
+    $("#tr-precio").value = st.precio.toFixed(st.precio < 10 ? 4 : 2);
+    $("#tr-fecha").value = st.fecha;
+    const upd = () => {
+      const a = A[st.t], pf = cartera(), compra = st.lado === "comprar";
+      const qty = pf.qty[st.t] || 0, maxVenta = qty * st.precio;
+      const m = compra ? st.monto : Math.min(st.monto, maxVenta);
+      $("#tr-side").className = "side " + (compra ? "buy" : "sell");
+      $("#tr-side").textContent = compra ? "COMPRAR" : "VENDER";
+      $("#tr-tk").textContent = st.t; $("#tr-nm").textContent = a.nombre; $(".tr-tk2").textContent = st.t;
+      $("#tr-instr").innerHTML = `${compra ? "Compra" : "Vende"} por monto <b>${usd(m || 0)}</b> (≈ ${clp((m || 0) * FX)}).${compra && pf.cashUSD < m ? ` Antes convierte ~${clp((m - pf.cashUSD) * FX)} a USD.` : ""}`;
+      $("#tr-ok").textContent = compra ? "Confirmar compra" : "Confirmar venta";
+      $$("[data-lado]", dlg).forEach((b) => b.setAttribute("aria-pressed", b.dataset.lado === st.lado));
+      const u = st.precio > 0 ? m / st.precio : 0;
+      const val = { ...pf.val }; val[st.t] = (val[st.t] || 0) + (compra ? m : -m);
+      const wD = pf.total ? (val[st.t] || 0) / pf.total : 0;
+      const p1 = proy(st.t, "1m");
+      const k = (l, v) => `<div class="sc"><div class="k">${l}</div><div class="v">${v}</div></div>`;
+      let h = k("Unidades", num(u, u < 1 ? 4 : 3)) + k("En pesos", clp(m * FX)) + k("Peso en tu portafolio", `${pct(wD, 1, false)} <small>obj. ${pct(R.objetivo.pesos[st.t] || 0, 1, false)}</small>`);
+      if (compra) {
+        h += k("Día malo (1 de cada 20)", `<span class="down">${sclp(-m * 1.645 * (a.vol_d || 0) * FX)}</span>`);
+        if (a.stop_dist > 0) h += k(a.bloque === "satelite" ? "Si toca el stop" : "Si quiebra tendencia", `<span class="down">${sclp(-m * a.stop_dist * FX)}</span>`);
+        if (p1) h += k("Mes pesimista", `<span class="down">${sclp(m * p1.p5 * FX)}</span>`);
+      } else {
+        h += k("Tienes", `${num(qty, 4)} u. · ${usd(maxVenta)}`);
+        if (p1) h += k("Si sigue cayendo, evitas", `<span class="up">${clp(-m * p1.p5 * FX)}</span>`);
+      }
+      $("#tr-sum").innerHTML = h;
+      const disp = pf.cashUSD + pf.cashCLP / FX;
+      $("#tr-warn").innerHTML = !compra && st.monto > maxVenta + 0.005 ? `${ICON.advertencia} Solo tienes ${usd(maxVenta)} en ${st.t}: se registrará la venta del total.`
+        : compra && m > disp + 0.005 ? `${ICON.advertencia} Supera tu efectivo registrado (${usd(disp)}): la diferencia se tomará como un aporte nuevo.` : "";
+      $("#tr-ok").disabled = !(m > 0 && st.precio > 0);
+    };
+    $("#tr-monto").addEventListener("input", (e) => { st.monto = Math.max(0, parseFloat(e.target.value) || 0); upd(); });
+    $("#tr-precio").addEventListener("input", (e) => { st.precio = Math.max(0, parseFloat(e.target.value) || 0); upd(); });
+    $("#tr-fecha").addEventListener("input", (e) => { st.fecha = e.target.value || hoyISO(); });
+    const selT = $("#tr-t");
+    if (selT) selT.addEventListener("change", (e) => { st.t = e.target.value; st.precio = A[st.t].precio; $("#tr-precio").value = st.precio.toFixed(st.precio < 10 ? 4 : 2); upd(); });
+    $$("[data-lado]", dlg).forEach((b) => b.addEventListener("click", () => { st.lado = b.dataset.lado; upd(); }));
+    $("#tr-copy").addEventListener("click", () => { (navigator.clipboard ? navigator.clipboard.writeText(st.t) : Promise.reject()).then(() => toast(`${st.t} copiado`)).catch(() => toast(st.t)); });
+    $("#tr-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const pf = cartera(), compra = st.lado === "comprar";
+      const m = compra ? st.monto : Math.min(st.monto, (pf.qty[st.t] || 0) * st.precio);
+      if (!(m > 0 && st.precio > 0)) return;
+      registrarOperacion({ t: st.t, monto: compra ? m : -m, precio: st.precio, fecha: st.fecha, key: st.key, tipo: st.tipo });
+      dlg.close(); render();
+      toast(`${compra ? "Compra" : "Venta"} de ${st.t} por ${usd(m)} registrada.`);
+    });
+    upd();
+    setTimeout(() => $("#tr-monto").focus(), 50);
+  }
+
+  function registrarOperacion({ t, monto, precio, fecha, key, tipo }) {
+    const q = monto / precio;
+    const p = S.pos.posiciones.find((x) => x.ticker === t);
+    if (p) {
+      const q0 = +p.cantidad || 0, nq = Math.max(0, q0 + q);
+      if (monto > 0) p.costo_promedio = +((q0 * (+p.costo_promedio || 0) + monto) / nq).toFixed(4);
+      p.cantidad = +nq.toFixed(6);
+      if (p.cantidad <= 1e-6) S.pos.posiciones = S.pos.posiciones.filter((x) => x !== p);
+    } else if (monto > 0) {
+      S.pos.posiciones.push({ ticker: t, cantidad: +q.toFixed(6), costo_promedio: +precio.toFixed(4) });
+    }
+    if (monto > 0) {
+      let falta = monto;
+      const u = Math.min(+S.pos.efectivo_usd || 0, falta);
+      S.pos.efectivo_usd = +((+S.pos.efectivo_usd || 0) - u).toFixed(2); falta -= u;
+      if (falta > 0) S.pos.efectivo_clp = Math.max(0, Math.round((+S.pos.efectivo_clp || 0) - falta * FX));
+    } else {
+      S.pos.efectivo_usd = +((+S.pos.efectivo_usd || 0) - monto).toFixed(2);
+    }
+    S.log.push({ fecha, tipo, ticker: t, monto: +monto.toFixed(2), precio, cantidad: +q.toFixed(6) });
+    S.log.sort((x, y) => String(y.fecha).localeCompare(String(x.fecha)));
+    if (key) S.marcas[key] = "ejecutada";
+    guardarPos(); LS.set("inv.log.v1", S.log); LS.set("inv.ordenes.v1", S.marcas);
+  }
+
+  // ------------------------------------------------------------------ sincronización entre dispositivos
+  const b64u = (u8) => { let s = ""; u8.forEach((b) => (s += String.fromCharCode(b))); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
+  const deb64u = (s) => { s = s.replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); };
+  async function codificar(obj) {
+    const json = JSON.stringify(obj);
+    if (window.CompressionStream) {
+      const st = new Blob([json]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+      return "z" + b64u(new Uint8Array(await new Response(st).arrayBuffer()));
+    }
+    return "j" + b64u(new TextEncoder().encode(json));
+  }
+  async function decodificar(s) {
+    const u8 = deb64u(s.slice(1));
+    if (s[0] === "z") return JSON.parse(await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text());
+    return JSON.parse(new TextDecoder().decode(u8));
+  }
+  const urlBase = () => (location.protocol === "file:" && R.config.url_publica ? R.config.url_publica : location.href.split("#")[0].split("?")[0]);
+  function cargarQR() {
+    return window.qrcode ? Promise.resolve() : new Promise((ok, ko) => {
+      const s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js";
+      s.onload = ok; s.onerror = ko; document.head.appendChild(s);
+    });
+  }
+  async function abrirSync() {
+    const datos = { p: S.pos.posiciones, u: +S.pos.efectivo_usd || 0, c: +S.pos.efectivo_clp || 0, l: S.log, tol: S.tol, plan: S.plan, m: S.marcas };
+    const enlace = urlBase() + "#sync=" + (await codificar(datos));
+    let qrTxt = enlace, parcial = false;
+    if (qrTxt.length > 2000) { qrTxt = urlBase() + "#sync=" + (await codificar({ ...datos, l: S.log.slice(0, 15), m: {} })); parcial = true; }
+    if (qrTxt.length > 2000) qrTxt = urlBase() + "#sync=" + (await codificar({ ...datos, l: [], m: {} }));
+    dialogo(`<div class="dlg-body">
+      <div class="dlg-head"><h2 style="margin:0">Llevar mis datos a otro dispositivo</h2><button type="button" class="btn sm ghost" data-close aria-label="Cerrar" style="margin-left:auto">✕</button></div>
+      <p class="sub" style="margin:0">Escanea el código con la cámara del celular, o copia el enlace y ábrelo en el otro dispositivo. Se importan tus posiciones, efectivo, operaciones y preferencias.</p>
+      <div class="qr" id="qr"><span class="note">Generando código…</span></div>
+      ${parcial ? `<p class="note" style="margin:0">El código QR incluye solo tus últimas 15 operaciones (por tamaño). El enlace incluye todo.</p>` : ""}
+      <div class="fields"><label>Enlace<input type="text" readonly id="sync-url" value="${esc(enlace)}"></label></div>
+      <p class="note" style="margin:0">${ICON.info} Tus datos van dentro del enlace (después del #) y no se envían a ningún servidor. No lo compartas: quien lo abra verá tus posiciones.</p>
+      <div class="dlg-actions"><button type="button" class="btn" id="sync-copy">Copiar enlace</button><button type="button" class="btn primary" data-close>Listo</button></div></div>`);
+    $("#sync-copy").addEventListener("click", () => { const i = $("#sync-url"); i.select(); (navigator.clipboard ? navigator.clipboard.writeText(enlace) : Promise.reject()).then(() => toast("Enlace copiado")).catch(() => { document.execCommand("copy"); toast("Enlace copiado"); }); });
+    cargarQR().then(() => {
+      const qr = window.qrcode(0, "L"); qr.addData(qrTxt); qr.make();
+      $("#qr").innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+    }).catch(() => { $("#qr").innerHTML = `<span class="note">Sin conexión para generar el QR. Usa el enlace.</span>`; });
+  }
+  async function revisarSyncEnURL() {
+    const mt = location.hash.match(/^#sync=(.+)$/);
+    if (!mt) return;
+    history.replaceState(null, "", location.pathname + location.search);
+    let d;
+    try { d = await decodificar(mt[1]); } catch (e) { toast("Enlace de sincronización no válido."); return; }
+    const total = (d.p || []).reduce((s, p) => s + (A[p.ticker] ? p.cantidad * A[p.ticker].precio : 0), 0) + (d.u || 0) + (d.c || 0) / FX;
+    dialogo(`<div class="dlg-body">
+      <div class="dlg-head"><h2 style="margin:0">Importar datos de otro dispositivo</h2></div>
+      <dl class="kv"><dt>Posiciones</dt><dd>${(d.p || []).length}</dd><dt>Efectivo</dt><dd>${usd(d.u || 0)} + ${clp(d.c || 0)}</dd><dt>Patrimonio</dt><dd>${clp(total * FX)}</dd><dt>Operaciones registradas</dt><dd>${(d.l || []).length}</dd></dl>
+      <p class="note" style="margin:0">${ICON.advertencia} Reemplazará los datos guardados en este dispositivo.</p>
+      <div class="dlg-actions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn primary" id="sync-ok">Importar</button></div></div>`);
+    $("#sync-ok").addEventListener("click", () => {
+      S.pos = { posiciones: d.p || [], efectivo_usd: d.u || 0, efectivo_clp: d.c || 0 };
+      S.log = d.l || []; if (d.tol) S.tol = d.tol; if (d.plan) S.plan = d.plan; if (d.m) S.marcas = d.m;
+      guardarPos(); LS.set("inv.log.v1", S.log); LS.set("inv.tol", S.tol); LS.set("inv.plan", S.plan); LS.set("inv.ordenes.v1", S.marcas);
+      $("#dlg").close(); render(); toast("Datos importados.");
+    });
+  }
+
+  // ------------------------------------------------------------------ instalar como app
+  let promptInstalar = null;
+  const esApp = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  function prepararInstalacion() {
+    const b = $("#btn-instalar");
+    if (location.protocol !== "https:" || esApp()) return;
+    b.classList.remove("hidden");
+    window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); promptInstalar = e; });
+    b.addEventListener("click", async () => {
+      if (promptInstalar) { promptInstalar.prompt(); await promptInstalar.userChoice; promptInstalar = null; return; }
+      const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      dialogo(`<div class="dlg-body"><div class="dlg-head"><h2 style="margin:0">Instalar en tu celular</h2><button type="button" class="btn sm ghost" data-close aria-label="Cerrar" style="margin-left:auto">✕</button></div>
+        ${ios ? `<ol class="pasos"><li>Abre esta página en <b>Safari</b>.</li><li>Toca el botón <b>Compartir</b> (cuadrado con flecha hacia arriba).</li><li>Elige <b>Agregar a pantalla de inicio</b> y luego <b>Agregar</b>.</li></ol>`
+        : `<ol class="pasos"><li>Abre esta página en <b>Chrome</b>.</li><li>Toca el menú <b>⋮</b> (arriba a la derecha).</li><li>Elige <b>Instalar app</b> o <b>Agregar a pantalla principal</b>.</li></ol>`}
+        <p class="note" style="margin:0">Quedará un ícono en tu pantalla de inicio y se abrirá como app, sin barra del navegador. Se actualiza sola cada día.</p>
+        <div class="dlg-actions"><button type="button" class="btn primary" data-close>Entendido</button></div></div>`);
+    });
+  }
+  if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});
 
   // ------------------------------------------------------------------ pestañas
   const TABS = {};
@@ -372,12 +780,21 @@
           <div class="tile"><div class="label">Alertas</div><div class="value">${R.alertas.length}</div><div class="delta">${R.alertas.filter((a) => a.nivel === "critico").length} críticas</div></div>
         </div>
       </div>
+      <div style="margin-top:16px">${opcionesHTML(pf)}</div>
+      <div style="margin-top:16px">${R.mensual ? planHTML(pf) : `<div class="card"><h2>Cómo comenzar y continuar</h2><p class="sub">Disponible en los informes generados desde esta versión.</p></div>`}</div>
       <div class="grid g2" style="margin-top:16px">
         <div class="card"><div class="card-head"><div><h2>Lo esencial hoy</h2><p class="sub">Informe diario · ${fecha(R.meta.fecha_datos)}</p></div><button class="btn sm" data-go="diario">Informe completo →</button></div>${bullets(R.narrativa_diaria.slice(0, 7))}</div>
         <div class="card"><div class="card-head"><div><h2>Próximos movimientos</h2><p class="sub">Pendientes de ejecutar en Racional</p></div><button class="btn sm" data-go="ordenes">Ver órdenes →</button></div>
           ${prox.length ? `<div class="orders">${prox.map((o) => ordenCard(o, pf, true)).join("")}</div>` : `<div class="empty">Sin movimientos pendientes. Mantener es también una decisión.</div>`}
         </div>
-      </div>`;
+      </div>
+      <div style="margin-top:16px">${rendimientoHTML(pf)}</div>`;
+    },
+    after() {
+      const pf = cartera();
+      planChart(pf); rendimientoChart();
+      const ia = $("#in-aporte"); if (ia) ia.addEventListener("change", () => { S.plan.aporte = Math.max(0, parseFloat(ia.value) || 0); LS.set("inv.plan", S.plan); render(); });
+      const sh = $("#sel-hz"); if (sh) sh.addEventListener("change", () => { S.plan.horizonte = +sh.value; LS.set("inv.plan", S.plan); render(); });
     },
   };
 
@@ -692,7 +1109,7 @@
           ${S.pos.posiciones.map((p, i) => { const a = A[p.ticker]; const v = a ? p.cantidad * a.precio : 0; const c = p.cantidad * (p.costo_promedio || 0);
             return `<tr><td><select data-i="${i}" data-k="ticker">${opts(p.ticker)}</select></td><td class="n"><input type="number" step="any" min="0" data-i="${i}" data-k="cantidad" value="${p.cantidad}"></td><td class="n"><input type="number" step="any" min="0" data-i="${i}" data-k="costo_promedio" value="${p.costo_promedio}"></td><td class="n">${a ? usd(a.precio) : "–"}</td><td class="n">${usd(v)}</td><td class="n ${cls(v - c)}">${c ? susd(v - c) + " (" + pct((v - c) / c) + ")" : "–"}</td><td class="n">${pct(pf.total ? v / pf.total : 0, 1, false)}</td><td><button class="btn sm ghost" data-del="${i}" aria-label="Eliminar">✕</button></td></tr>`; }).join("") || `<tr><td colspan="8" class="note">Aún no tienes posiciones registradas.</td></tr>`}
           </tbody></table></div>
-          <div class="row-actions"><button class="btn" id="btn-add">+ Agregar posición</button></div>
+          <div class="row-actions"><button class="btn primary" data-trade="1" data-t="VOO" data-monto="0" data-tipo="manual" id="btn-registrar">Registrar operación</button><button class="btn" id="btn-add">+ Agregar posición (sin operación)</button><button class="btn" id="btn-sync">Llevar a otro dispositivo (QR)</button></div>
           <h3>Efectivo</h3>
           <div class="row-actions" style="margin-top:0;align-items:center">
             <label>USD en Racional <input type="number" step="any" min="0" id="in-usd" value="${S.pos.efectivo_usd}"></label>
@@ -716,6 +1133,7 @@
         guardarPos(); render();
       }));
       $$("[data-del]").forEach((b) => b.addEventListener("click", () => { S.pos.posiciones.splice(+b.dataset.del, 1); guardarPos(); render(); }));
+      $("#btn-sync").addEventListener("click", abrirSync);
       $("#btn-add").addEventListener("click", () => { S.pos.posiciones.push({ ticker: "VOO", cantidad: 0, costo_promedio: A.VOO ? +A.VOO.precio.toFixed(2) : 0 }); guardarPos(); render(); });
       $("#in-usd").addEventListener("change", (e) => { S.pos.efectivo_usd = Math.max(0, parseFloat(e.target.value) || 0); guardarPos(); render(); });
       $("#in-clp").addEventListener("change", (e) => { S.pos.efectivo_clp = Math.max(0, parseFloat(e.target.value) || 0); guardarPos(); render(); });
@@ -794,10 +1212,15 @@
   }
 
   document.addEventListener("click", (e) => {
+    const tr = e.target.closest("[data-trade]");
+    if (tr) { e.preventDefault(); abrirTrade({ t: tr.dataset.t, monto: +tr.dataset.monto, key: tr.dataset.key, tipo: tr.dataset.tipo, libre: tr.dataset.tipo === "manual" }); return; }
+    const sup = e.target.closest("[data-sup]");
+    if (sup) { S.plan.supuesto = sup.dataset.sup; LS.set("inv.plan", S.plan); render(); return; }
     const el = e.target.closest("[data-tab],[data-go],[data-ver],[data-filtro],[data-ord],[data-act],[data-preset],[data-hist],[data-modo]");
     if (!el) return;
     if (el.dataset.tab || el.dataset.go) {
       e.preventDefault();
+      if (el.dataset.ordtipo) S.ordTipo = el.dataset.ordtipo;
       S.tab = el.dataset.tab || el.dataset.go; LS.set("inv.tab", S.tab); render(); window.scrollTo({ top: 0 }); return;
     }
     if (el.dataset.ver && !e.target.closest("button,input,select")) { S.activo = el.dataset.ver; LS.set("inv.activo", S.activo); S.tab = "activos"; render(); window.scrollTo({ top: 0 }); return; }
@@ -813,11 +1236,7 @@
       const card = el.closest(".order"); const key = card && card.dataset.key;
       if (el.dataset.act === "ver") { S.activo = el.dataset.t; S.tab = "activos"; render(); window.scrollTo({ top: 0 }); return; }
       if (!key) return;
-      const [, tipo, t] = key.split("|");
-      if (el.dataset.act === "ejecutar") {
-        const o = ordenes(tipo).lista.find((x) => x.key === key);
-        if (o) { registrarEjecucion(o); toast(`${o.monto > 0 ? "Compra" : "Venta"} de ${t} registrada. Posiciones actualizadas.`); }
-      } else if (el.dataset.act === "descartar") { S.marcas[key] = "descartada"; LS.set("inv.ordenes.v1", S.marcas); }
+      if (el.dataset.act === "descartar") { S.marcas[key] = "descartada"; LS.set("inv.ordenes.v1", S.marcas); }
       else if (el.dataset.act === "deshacer") { delete S.marcas[key]; LS.set("inv.ordenes.v1", S.marcas); toast("Marca eliminada (las posiciones no se revierten)."); }
       render();
     }
@@ -857,4 +1276,6 @@
   window.__ULTIMO = R.meta.fecha_datos;
   renderSelector();
   render();
+  prepararInstalacion();
+  revisarSyncEnURL();
 })();

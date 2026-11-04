@@ -50,6 +50,7 @@
       const iw = W - m.l - m.r, ih = H - m.t - m.b;
       let vals = [];
       series.forEach((s) => s.values.forEach((v) => v != null && vals.push(v)));
+      (opt.bands || []).forEach((b) => { b.lo.forEach((v) => v != null && vals.push(v)); b.hi.forEach((v) => v != null && vals.push(v)); });
       (opt.refLines || []).forEach((r) => vals.push(r.y));
       let min = Math.min(...vals), max = Math.max(...vals);
       if (opt.yDomain) [min, max] = opt.yDomain;
@@ -74,6 +75,12 @@
         const anchor = k === 0 ? "start" : k === nx - 1 ? "end" : "middle";
         g += `<text x="${X(i)}" y="${H - 6}" text-anchor="${anchor}">${esc(opt.xfmt ? opt.xfmt(labels[i]) : labels[i])}</text>`;
       }
+      (opt.bands || []).forEach((b) => {
+        let up = "", dn = "";
+        b.hi.forEach((v, i) => { if (v != null) up += (up ? "L" : "M") + X(i).toFixed(1) + "," + Y(v).toFixed(1); });
+        for (let i = b.lo.length - 1; i >= 0; i--) if (b.lo[i] != null) dn += "L" + X(i).toFixed(1) + "," + Y(b.lo[i]).toFixed(1);
+        g += `<path d="${up}${dn}Z" style="fill:${b.color};opacity:${b.opacity || 0.12}"/>`;
+      });
       series.forEach((s) => {
         let d = "", pen = false;
         s.values.forEach((v, i) => {
@@ -117,7 +124,7 @@
         xh.setAttribute("x1", X(i)); xh.setAttribute("x2", X(i)); xh.style.display = "";
         hd.innerHTML = series.map((s) => s.values[i] == null ? "" : `<circle cx="${X(i)}" cy="${Y(s.values[i])}" r="4" style="fill:${s.color};stroke:var(--surface)" stroke-width="2"/>`).join("");
         tip.innerHTML = `<div class="t">${esc(opt.xfmtLong ? opt.xfmtLong(labels[i]) : labels[i])}</div>` +
-          series.map((s) => `<div class="r"><span><i style="background:${s.color}"></i>${esc(s.name)}</span><b>${s.values[i] == null ? "–" : esc(tfmt(s.values[i]))}</b></div>`).join("");
+          series.map((s) => `<div class="r"><span><i style="background:${s.color}"></i>${esc(s.name)}</span><b>${s.values[i] == null ? "–" : esc(tfmt(s.values[i]))}</b></div>`).join("") + (opt.tipExtra ? opt.tipExtra(i) : "");
         tip.style.display = "block";
         const tw = tip.offsetWidth;
         let left = X(i) + 14;
@@ -202,5 +209,17 @@
     return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><path d="${d}" fill="none" style="stroke:var(--axis)" stroke-width="1.5" stroke-linejoin="round"/><circle cx="${X(li)}" cy="${Y(values[li])}" r="3" style="fill:${opt.color || "var(--accent)"}"/></svg>`;
   }
 
-  window.Charts = { line, hbars, spark, legendHTML, niceTicks };
+  /** Barra de rango (p5–p95, p25–p75 y punto central) como string SVG, en una escala común [mn, mx]. */
+  function rango(p, mn, mx, opt = {}) {
+    const w = opt.w || 150, h = 16;
+    const X = (v) => 4 + ((Math.max(mn, Math.min(mx, v)) - mn) / (mx - mn || 1)) * (w - 8);
+    const col = p.p50 >= 0 ? "var(--pos)" : "var(--neg)";
+    return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true" class="rango">
+      <line x1="${X(0)}" x2="${X(0)}" y1="1" y2="${h - 1}" style="stroke:var(--axis)"/>
+      <line x1="${X(p.p5)}" x2="${X(p.p95)}" y1="${h / 2}" y2="${h / 2}" style="stroke:var(--axis)" stroke-width="2" stroke-linecap="round"/>
+      <line x1="${X(p.p25)}" x2="${X(p.p75)}" y1="${h / 2}" y2="${h / 2}" style="stroke:${col};opacity:.45" stroke-width="6" stroke-linecap="round"/>
+      <circle cx="${X(p.p50)}" cy="${h / 2}" r="4" style="fill:${col};stroke:var(--surface)" stroke-width="2"/></svg>`;
+  }
+
+  window.Charts = { line, hbars, spark, legendHTML, niceTicks, rango };
 })();
